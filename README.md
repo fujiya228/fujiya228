@@ -19,8 +19,6 @@ Here are some ideas to get you started:
 ## Fujiya's GitHub
 [![trophy](https://github-profile-trophy.vercel.app/?username=fujiya228&theme=onestar)](https://github.com/ryo-ma/github-profile-trophy)
 
-![Anurag's github stats](https://github-readme-stats.vercel.app/api?username=fujiya228&show_icons=true&theme=gotham&bg_color=0d1117&border_color=30363d&title_color=2361cb&text_color=77909c&icon_color=77909c)
-
 [![](https://raw.githubusercontent.com/fujiya228/fujiya228/master/profile-summary-card-output/github_dark/0-profile-details.svg)](https://github.com/vn7n24fzkq/github-profile-summary-cards)
 [![](https://raw.githubusercontent.com/fujiya228/fujiya228/master/profile-summary-card-output/github_dark/4-productive-time.svg)](https://github.com/vn7n24fzkq/github-profile-summary-cards)
 
