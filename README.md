@@ -19,8 +19,8 @@ Here are some ideas to get you started:
 ## Fujiya's GitHub
 
 <div>
-  <img src="https://github.com/fujiya228/fujiya228/blob/main/metrics1.svg" width="48%" />
-  <img src="https://github.com/fujiya228/fujiya228/blob/main/metrics2.svg" width="48%" />
+  <img src="https://github.com/fujiya228/fujiya228/blob/master/metrics1.svg" width="48%" />
+  <img src="https://github.com/fujiya228/fujiya228/blob/master/metrics2.svg" width="48%" />
 </div>
 
 [![](https://raw.githubusercontent.com/fujiya228/fujiya228/master/profile-summary-card-output/github_dark/0-profile-details.svg)](https://github.com/vn7n24fzkq/github-profile-summary-cards)
