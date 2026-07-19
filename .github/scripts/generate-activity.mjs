@@ -11,7 +11,7 @@
 // Usage:  GITHUB_TOKEN=<pat> node generate-activity.mjs <login> [cacheFile]
 //         node generate-activity.mjs --selftest      # offline render check, no network
 
-import { readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, readdirSync, mkdirSync } from 'node:fs';
 
 const C = {
   bg: '#0d1117', border: '#30363d', title: '#58a6ff',
@@ -127,14 +127,15 @@ function panel(x, y, w, h, title, series) {
   const bars = values.map((v, i) => {
     const bh = (v / maxV) * chartH * 0.92;
     const bx = x + i * slot + (slot - barW) / 2;
-    return `<rect x="${bx.toFixed(1)}" y="${(baseline - bh).toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="1.5" fill="${C.bar}"/>`;
+    const delay = Math.min(i * 0.012, 1).toFixed(2);
+    return `<rect class="bar" style="animation-delay:${delay}s" x="${bx.toFixed(1)}" y="${(baseline - bh).toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="1.5" fill="${C.bar}"/>`;
   }).join('');
 
   const pts = cum.map((v, i) => `${(x + i * slot + slot / 2).toFixed(1)},${(baseline - (v / maxC) * chartH * 0.85).toFixed(1)}`);
-  const line = `<polyline points="${pts.join(' ')}" fill="none" stroke="${C.line}" stroke-width="2" stroke-linejoin="round"/>`;
+  const line = `<polyline class="cum" pathLength="1" points="${pts.join(' ')}" fill="none" stroke="${C.line}" stroke-width="2" stroke-linejoin="round"/>`;
   const [ex, ey] = pts.at(-1).split(',');
-  const endDot = `<circle cx="${ex}" cy="${ey}" r="3" fill="${C.line}"/>
-    <text x="${(+ex - 6).toFixed(1)}" y="${(+ey - 7).toFixed(1)}" fill="${C.line}" font-size="11" font-weight="600" text-anchor="end">${fmt(total)}</text>`;
+  const endDot = `<g class="end"><circle cx="${ex}" cy="${ey}" r="3" fill="${C.line}"/>
+    <text x="${(+ex - 6).toFixed(1)}" y="${(+ey - 7).toFixed(1)}" fill="${C.line}" font-size="11" font-weight="600" text-anchor="end">${fmt(total)}</text></g>`;
 
   const xlabels = labels.map((l, i) =>
     l ? `<text x="${(x + i * slot + slot / 2).toFixed(1)}" y="${baseline + 13}" fill="${C.label}" font-size="9" text-anchor="middle">${esc(l)}</text>` : '').join('');
@@ -152,6 +153,17 @@ function card(name, subtitle, panels) {
   const H = top + ph * panels.length + 14;
   const body = panels.map((p, i) => panel(PAD, top + ph * i, pw, ph, p.title, p.series)).join('\n  ');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Ubuntu, sans-serif">
+  <style>
+    /* auto-play on render — GitHub's img-embedded SVG runs CSS animation but not :hover/JS.
+       base state = final, so if animation is unsupported the finished card still shows. */
+    .bar{transform-box:fill-box;transform-origin:bottom;animation:grow .9s ease-out backwards}
+    .cum{stroke-dasharray:1;animation:draw 1.4s ease-out .25s backwards}
+    .end{animation:fade .6s ease-out 1.25s backwards}
+    @keyframes grow{from{transform:scaleY(0)}}
+    @keyframes draw{from{stroke-dashoffset:1}to{stroke-dashoffset:0}}
+    @keyframes fade{from{opacity:0}}
+    @media (prefers-reduced-motion:reduce){.bar,.cum,.end{animation:none}}
+  </style>
   <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="10" fill="${C.bg}" stroke="${C.border}"/>
   <text x="${PAD}" y="40" fill="${C.title}" font-size="18" font-weight="700">${esc(name)} · GitHub Activity</text>
   <text x="${W - PAD}" y="40" fill="${C.label}" font-size="12" text-anchor="end">${esc(subtitle)}</text>
@@ -184,13 +196,33 @@ if (process.argv.includes('--selftest')) {
   process.exit(ok ? 0 : 1);
 }
 
-// ---------- main ----------
-const [login, cacheFile = '.github/data/contributions.json'] = process.argv.slice(2);
-const token = process.env.GITHUB_TOKEN;
-if (!login || !token) { console.error('usage: GITHUB_TOKEN=<pat> node generate-activity.mjs <login> [cacheFile]'); process.exit(1); }
+// ---------- cache: one JSON file per year (past years are immutable -> stable diffs) ----------
+function loadCache(dir) {
+  const days = {};
+  if (existsSync(dir))
+    for (const f of readdirSync(dir))
+      if (/^\d{4}\.json$/.test(f)) Object.assign(days, JSON.parse(readFileSync(`${dir}/${f}`, 'utf8')).days);
+  return days;
+}
+function saveCache(dir, daysMap) {
+  mkdirSync(dir, { recursive: true });
+  const byYear = {};
+  for (const [date, count] of Object.entries(daysMap)) (byYear[date.slice(0, 4)] ??= {})[date] = count;
+  for (const [year, days] of Object.entries(byYear)) {
+    const sorted = Object.fromEntries(Object.entries(days).sort((a, b) => a[0].localeCompare(b[0])));
+    const body = JSON.stringify({ year, days: sorted }, null, 0);
+    const path = `${dir}/${year}.json`;
+    if (!existsSync(path) || readFileSync(path, 'utf8') !== body) writeFileSync(path, body); // write only if changed
+  }
+}
 
-const cache = existsSync(cacheFile) ? JSON.parse(readFileSync(cacheFile, 'utf8')) : { login, days: {} };
-const cachedDates = Object.keys(cache.days).sort();
+// ---------- main ----------
+const [login, cacheDir = '.github/data/contributions'] = process.argv.slice(2);
+const token = process.env.GITHUB_TOKEN;
+if (!login || !token) { console.error('usage: GITHUB_TOKEN=<pat> node generate-activity.mjs <login> [cacheDir]'); process.exit(1); }
+
+const daysMap = loadCache(cacheDir);
+const cachedDates = Object.keys(daysMap).sort();
 const now = new Date();
 // backfill from account creation on first run; else refetch only the last ~10 days (corrections)
 const from = cachedDates.length
@@ -198,15 +230,14 @@ const from = cachedDates.length
   : await createdAt(login, token);
 console.log(`fetching ${from.toISOString().slice(0, 10)}..${now.toISOString().slice(0, 10)} (cache: ${cachedDates.length} days)`);
 const fresh = await fetchRange(login, token, from, now);
-for (const [date, count] of fresh) cache.days[date] = count;
-cache.login = login; cache.updatedAt = now.toISOString();
+for (const [date, count] of fresh) daysMap[date] = count;
 
-const days = Object.entries(cache.days).map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date));
+const days = Object.entries(daysMap).map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date));
 const total = days.reduce((s, x) => s + x.count, 0);
 const since = days[0]?.date.slice(0, 4) || '';
 const lastYearTotal = days.slice(-365).reduce((s, x) => s + x.count, 0);
 
-writeFileSync(cacheFile, JSON.stringify(cache));
+saveCache(cacheDir, daysMap);
 writeFileSync('activity.svg', renderYear(login, lastYearTotal, lastYearSeries(days)));
 writeFileSync('activity-all.svg', renderAll(login, total, since, allTimeSeries(days)));
-console.log(`wrote activity.svg + activity-all.svg + cache: ${days.length} days, ${total} total since ${since}`);
+console.log(`wrote activity.svg + activity-all.svg + ${cacheDir}/*.json: ${days.length} days, ${total} total since ${since}`);

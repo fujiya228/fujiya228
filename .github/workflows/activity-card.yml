@@ -22,7 +22,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add activity.svg activity-all.svg .github/data/contributions.json
+          git add activity.svg activity-all.svg .github/data/contributions/
           if ! git diff --cached --quiet; then
             git commit -m "chore: refresh activity cards [skip ci]"
             git pull --rebase --autostash
