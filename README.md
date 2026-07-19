@@ -23,5 +23,8 @@ Here are some ideas to get you started:
   <img src="https://github.com/fujiya228/fujiya228/blob/master/metrics2.svg" width="48%" />
 </div>
 
-[![](https://raw.githubusercontent.com/fujiya228/fujiya228/master/profile-summary-card-output/github_dark/0-profile-details.svg)](https://github.com/vn7n24fzkq/github-profile-summary-cards)
+<div>
+  <img src="https://github-readme-stats.vercel.app/api?username=fujiya228&show_icons=true&theme=github_dark" width="48%" />
+  <img src="https://github-readme-stats.vercel.app/api/top-langs/?username=fujiya228&layout=compact&theme=github_dark" width="48%" />
+</div>
 

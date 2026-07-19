@@ -1,4 +1,4 @@
-name: GitHub-Profile-Summary-Cards
+name: Profile Metrics
 
 on:
   schedule: # daily at 02:00 UTC (11:00 JST)
@@ -6,17 +6,6 @@ on:
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    name: generate
-
-    steps:
-      - uses: actions/checkout@v2
-      - uses: vn7n24fzkq/github-profile-summary-cards@v0.10.2
-        env: # default use ${{ secrets.GITHUB_TOKEN }}, you can change to your personal access token
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          USERNAME: ${{ github.repository_owner }}
   github-metrics:
     runs-on: ubuntu-latest
     steps:
