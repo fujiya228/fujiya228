@@ -182,49 +182,55 @@ const renderAll = (name, total, since, s) => card(name, `all time: ${fmt(total)}
   { title: 'Yearly', series: s.yearly },
 ]);
 
-// All-time daily heatmap, GitHub-style but one MONTH per row (cols = day 1..31), newest on top.
+// All-time daily heatmap, GitHub-style but one QUARTER per row (cols = day-within-quarter),
+// newest quarter on top. ~28 rows instead of ~85 months / ~365 weeks.
 function renderCalendar(name, daysMap) {
-  const CELL = 11, GAP = 2, STEP = CELL + GAP, ML = 62, MT = 44, MB = 34;
+  const CELL = 9, GAP = 2, STEP = CELL + GAP, ML = 66, MT = 44, MB = 34;
   const PAL = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353']; // GitHub dark scale
   const pad = (n) => String(n).padStart(2, '0');
   const dates = Object.keys(daysMap).sort();
+  const today = dates.at(-1);
+  const dim = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
 
-  // quartile thresholds over nonzero days -> 4 intensity levels
   const nz = Object.values(daysMap).filter((v) => v > 0).sort((a, b) => a - b);
   const q = (p) => nz.length ? nz[Math.min(nz.length - 1, Math.floor(p * nz.length))] : 1;
   const [q1, q2, q3] = [q(0.25), q(0.5), q(0.75)];
   const level = (c) => (c <= 0 ? 0 : c <= q1 ? 1 : c <= q2 ? 2 : c <= q3 ? 3 : 4);
 
-  // months oldest -> newest, then reversed so newest is row 0 (top)
-  const [fy, fm] = [+dates[0].slice(0, 4), +dates[0].slice(5, 7)];
-  const [ly, lm] = [+dates.at(-1).slice(0, 4), +dates.at(-1).slice(5, 7)];
-  const months = [];
-  for (let y = fy, m = fm; y < ly || (y === ly && m <= lm); m++ > 11 && (m = 1, y++)) months.push([y, m]);
-  months.reverse();
-  const today = dates.at(-1);
-  const dim = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
+  // quarters oldest -> newest, then reversed so newest is row 0 (top). q in 0..3
+  const [fy, fq] = [+dates[0].slice(0, 4), Math.floor((+dates[0].slice(5, 7) - 1) / 3)];
+  const [ly, lq] = [+dates.at(-1).slice(0, 4), Math.floor((+dates.at(-1).slice(5, 7) - 1) / 3)];
+  const quarters = [];
+  for (let y = fy, qq = fq; y < ly || (y === ly && qq <= lq); qq++ > 2 && (qq = 0, y++)) quarters.push([y, qq]);
+  quarters.reverse();
 
-  const W = ML + 31 * STEP + 10, H = MT + months.length * STEP + MB;
+  const COLS = 92; // max days in a quarter
+  const W = ML + COLS * STEP + 10, H = MT + quarters.length * STEP + MB;
   let cells = '', labels = '', prevYear = null;
-  months.forEach(([y, m], i) => {
+  quarters.forEach(([y, qq], i) => {
     const ry = MT + i * STEP;
     if (y !== prevYear) { labels += `<text x="8" y="${ry + CELL}" fill="${C.label}" font-size="10">${y}</text>`; prevYear = y; }
-    labels += `<text x="${ML - 6}" y="${ry + CELL}" fill="${C.label}" font-size="10" text-anchor="end">${MONTHS[m - 1]}</text>`;
-    for (let d = 1; d <= dim(y, m); d++) {
-      const key = `${y}-${pad(m)}-${pad(d)}`;
-      if (key > today) continue;
-      cells += `<rect x="${ML + (d - 1) * STEP}" y="${ry}" width="${CELL}" height="${CELL}" rx="2" fill="${PAL[level(daysMap[key] || 0)]}"/>`;
+    labels += `<text x="${ML - 6}" y="${ry + CELL}" fill="${C.label}" font-size="10" text-anchor="end">Q${qq + 1}</text>`;
+    let col = 0;
+    for (let m = qq * 3 + 1; m <= qq * 3 + 3; m++) {
+      for (let d = 1; d <= dim(y, m); d++) {
+        const key = `${y}-${pad(m)}-${pad(d)}`;
+        if (key <= today) cells += `<rect x="${ML + col * STEP}" y="${ry}" width="${CELL}" height="${CELL}" rx="1.5" fill="${PAL[level(daysMap[key] || 0)]}"/>`;
+        col++;
+      }
     }
   });
-  const dayHead = [1, 5, 10, 15, 20, 25, 31].map((d) => `<text x="${ML + (d - 1) * STEP + CELL / 2}" y="${MT - 8}" fill="${C.label}" font-size="9" text-anchor="middle">${d}</text>`).join('');
+  // header: mark the 3 month bands within a quarter (~31 days each)
+  const head = [[0, '1st mo.'], [31, '2nd mo.'], [62, '3rd mo.']].map(([c, t]) =>
+    `<text x="${ML + c * STEP}" y="${MT - 8}" fill="${C.label}" font-size="9">${t}</text>`).join('');
   const legend = PAL.map((col, i) => `<rect x="${ML + i * 16}" y="${H - 19}" width="11" height="11" rx="2" fill="${col}"/>`).join('') +
     `<text x="${ML - 6}" y="${H - 10}" fill="${C.label}" font-size="9" text-anchor="end">Less</text>` +
     `<text x="${ML + 5 * 16 + 4}" y="${H - 10}" fill="${C.label}" font-size="9">More</text>`;
 
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Ubuntu, sans-serif">
   <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="10" fill="${C.bg}" stroke="${C.border}"/>
-  <text x="16" y="26" fill="${C.title}" font-size="14" font-weight="700">${esc(name)} · daily (month per row)</text>
-  ${dayHead}${labels}${cells}${legend}
+  <text x="16" y="26" fill="${C.title}" font-size="14" font-weight="700">${esc(name)} · daily (quarter per row)</text>
+  ${head}${labels}${cells}${legend}
 </svg>`;
 }
 

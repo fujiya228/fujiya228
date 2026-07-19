@@ -22,5 +22,5 @@ Here are some ideas to get you started:
 
 <img src="https://raw.githubusercontent.com/fujiya228/fujiya228/master/activity-all.svg" width="100%" />
 
-<img src="https://raw.githubusercontent.com/fujiya228/fujiya228/master/activity-calendar.svg" width="480" />
+<img src="https://raw.githubusercontent.com/fujiya228/fujiya228/master/activity-calendar.svg" width="100%" />
 
