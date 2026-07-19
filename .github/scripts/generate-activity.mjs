@@ -182,6 +182,52 @@ const renderAll = (name, total, since, s) => card(name, `all time: ${fmt(total)}
   { title: 'Yearly', series: s.yearly },
 ]);
 
+// All-time daily heatmap, GitHub-style but vertical: one week per row, newest week on top.
+function renderCalendar(name, daysMap) {
+  const CELL = 11, GAP = 3, STEP = CELL + GAP, ML = 46, MT = 46, MB = 36;
+  const PAL = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353']; // GitHub dark scale
+  const DAY = 864e5, iso = (d) => d.toISOString().slice(0, 10);
+  const dates = Object.keys(daysMap).sort();
+  const total = Object.values(daysMap).reduce((s, v) => s + v, 0);
+
+  // quartile thresholds over nonzero days -> 4 intensity levels
+  const nz = Object.values(daysMap).filter((v) => v > 0).sort((a, b) => a - b);
+  const q = (p) => nz.length ? nz[Math.min(nz.length - 1, Math.floor(p * nz.length))] : 1;
+  const [q1, q2, q3] = [q(0.25), q(0.5), q(0.75)];
+  const level = (c) => (c <= 0 ? 0 : c <= q1 ? 1 : c <= q2 ? 2 : c <= q3 ? 3 : 4);
+
+  const sunday = (d) => new Date(+d - d.getUTCDay() * DAY);
+  const today = new Date(dates.at(-1) + 'T00:00:00Z');
+  const lastSun = sunday(today);
+  const firstSun = sunday(new Date(dates[0] + 'T00:00:00Z'));
+  const nWeeks = Math.round((+lastSun - +firstSun) / (7 * DAY)) + 1;
+
+  const W = ML + 7 * STEP + 10, H = MT + nWeeks * STEP + MB;
+  const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+  let cells = '', ylabels = '', prevYear = null;
+  for (let i = 0; i < nWeeks; i++) { // i=0 => newest week, at top
+    const wStart = new Date(+lastSun - i * 7 * DAY);
+    const yr = wStart.getUTCFullYear();
+    if (yr !== prevYear) { ylabels += `<text x="8" y="${MT + i * STEP + CELL}" fill="${C.label}" font-size="10">${yr}</text>`; prevYear = yr; }
+    for (let c = 0; c < 7; c++) {
+      const d = new Date(+wStart + c * DAY);
+      if (d > today) continue; // future days in the current week
+      const cnt = daysMap[iso(d)] || 0;
+      cells += `<rect x="${ML + c * STEP}" y="${MT + i * STEP}" width="${CELL}" height="${CELL}" rx="2" fill="${PAL[level(cnt)]}"/>`;
+    }
+  }
+  const dowHead = DOW.map((l, c) => `<text x="${ML + c * STEP + CELL / 2}" y="${MT - 8}" fill="${C.label}" font-size="9" text-anchor="middle">${l}</text>`).join('');
+  const legend = PAL.map((col, i) => `<rect x="${ML + i * 16}" y="${H - 20}" width="11" height="11" rx="2" fill="${col}"/>`).join('') +
+    `<text x="${ML - 4}" y="${H - 11}" fill="${C.label}" font-size="9" text-anchor="end">Less</text>` +
+    `<text x="${ML + 5 * 16 + 4}" y="${H - 11}" fill="${C.label}" font-size="9">More</text>`;
+
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Ubuntu, sans-serif">
+  <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="10" fill="${C.bg}" stroke="${C.border}"/>
+  <text x="16" y="26" fill="${C.title}" font-size="14" font-weight="700">${esc(name)} · daily</text>
+  ${dowHead}${ylabels}${cells}${legend}
+</svg>`;
+}
+
 // ---------- self-test ----------
 if (process.argv.includes('--selftest')) {
   const days = [];
@@ -189,9 +235,11 @@ if (process.argv.includes('--selftest')) {
   for (let i = 0; i < 2400; i++) { days.push({ date: dt.toISOString().slice(0, 10), count: (i * 7) % 11 }); dt = new Date(+dt + 864e5); }
   const total = days.reduce((s, x) => s + x.count, 0);
   const yr = lastYearSeries(days), all = allTimeSeries(days);
-  const a = renderYear('Test', total, yr), b = renderAll('Test', total, '2019', all);
+  const map = Object.fromEntries(days.map((d) => [d.date, d.count]));
+  const a = renderYear('Test', total, yr), b = renderAll('Test', total, '2019', all), cal = renderCalendar('Test', map);
   const ok = yr.daily.values.length === 30 && yr.weekly.values.length === 13 && yr.monthly.values.length === 12 &&
-    all.yearly.values.length >= 6 && a.includes('<polyline') && b.includes('all time') && !a.includes('undefined');
+    all.yearly.values.length >= 6 && a.includes('<polyline') && b.includes('all time') && !a.includes('undefined') &&
+    cal.includes('<rect') && cal.includes('Less') && !cal.includes('NaN');
   console.log(ok ? 'selftest OK' : 'selftest FAILED', { years: all.yearly.values.length, months: all.monthly.values.length });
   process.exit(ok ? 0 : 1);
 }
@@ -240,4 +288,5 @@ const lastYearTotal = days.slice(-365).reduce((s, x) => s + x.count, 0);
 saveCache(cacheDir, daysMap);
 writeFileSync('activity.svg', renderYear(login, lastYearTotal, lastYearSeries(days)));
 writeFileSync('activity-all.svg', renderAll(login, total, since, allTimeSeries(days)));
-console.log(`wrote activity.svg + activity-all.svg + ${cacheDir}/*.json: ${days.length} days, ${total} total since ${since}`);
+writeFileSync('activity-calendar.svg', renderCalendar(login, daysMap));
+console.log(`wrote activity.svg + activity-all.svg + activity-calendar.svg + ${cacheDir}/*.json: ${days.length} days, ${total} total since ${since}`);
