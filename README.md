@@ -23,3 +23,5 @@ Here are some ideas to get you started:
   <img src="https://raw.githubusercontent.com/fujiya228/fujiya228/master/metrics2.svg" width="48%" />
 </div>
 
+<img src="https://raw.githubusercontent.com/fujiya228/fujiya228/master/stats.svg" width="60%" />
+

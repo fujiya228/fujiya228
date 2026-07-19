@@ -1,0 +1,31 @@
+name: Stats Card
+
+on:
+  schedule: # daily at 02:15 UTC — offset from the metrics workflow to avoid a push race
+    - cron: '15 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  stats:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate stats.svg
+        env:
+          # PAT: the default repo-scoped GITHUB_TOKEN 403s on cross-repo user queries
+          GITHUB_TOKEN: ${{ secrets.METRICS_TOKEN }}
+        run: node .github/scripts/generate-stats.mjs "${{ github.repository_owner }}" stats.svg
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet stats.svg; then
+            git add stats.svg
+            git commit -m "chore: refresh stats.svg [skip ci]"
+            git pull --rebase --autostash
+            git push
+          else
+            echo "stats.svg unchanged"
+          fi
