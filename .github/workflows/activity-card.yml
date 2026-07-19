@@ -12,20 +12,21 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: Generate activity.svg
+      - name: Generate activity cards
         env:
           # PAT: the default repo-scoped GITHUB_TOKEN 403s on cross-repo user queries
           GITHUB_TOKEN: ${{ secrets.METRICS_TOKEN }}
-        run: node .github/scripts/generate-activity.mjs "${{ github.repository_owner }}" activity.svg
+        # writes activity.svg + activity-all.svg and updates the cached daily history JSON
+        run: node .github/scripts/generate-activity.mjs "${{ github.repository_owner }}"
       - name: Commit if changed
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          if ! git diff --quiet activity.svg; then
-            git add activity.svg
-            git commit -m "chore: refresh activity.svg [skip ci]"
+          git add activity.svg activity-all.svg .github/data/contributions.json
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: refresh activity cards [skip ci]"
             git pull --rebase --autostash
             git push
           else
-            echo "activity.svg unchanged"
+            echo "no change"
           fi

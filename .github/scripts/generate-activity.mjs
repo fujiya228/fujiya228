@@ -1,20 +1,28 @@
 #!/usr/bin/env node
-// Self-generated activity card: per-period bars + cumulative line, at daily / weekly / monthly
-// granularity, rendered to a committed activity.svg. Source is the contribution calendar (the
-// green-squares data) via one light GraphQL query — no per-repo commit scan, so it never trips
-// the RESOURCE_LIMITS_EXCEEDED that heavier cards hit on this account. No third-party live service.
+// Self-generated activity cards from the GitHub contribution calendar (green-squares data).
+// Daily contribution counts are cached in a committed JSON file so old (immutable) history is
+// fetched once and later runs only pull the recent window. Renders two static SVGs:
+//   activity.svg      last-year view: daily(30d) / weekly(13w) / monthly(12m)
+//   activity-all.svg  all-time view:  monthly(all) / yearly
+// The full-year (and even single-month) calendar query trips RESOURCE_LIMITS_EXCEEDED on large
+// accounts, so ranges are fetched in month windows and any window that still fails is split in
+// half recursively. No third-party live service — output is committed SVG + JSON.
 //
-// Usage:  GITHUB_TOKEN=<pat> node generate-activity.mjs <login> [outfile]
+// Usage:  GITHUB_TOKEN=<pat> node generate-activity.mjs <login> [cacheFile]
 //         node generate-activity.mjs --selftest      # offline render check, no network
+
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 
 const C = {
   bg: '#0d1117', border: '#30363d', title: '#58a6ff',
   label: '#8b949e', value: '#c9d1d9', bar: '#39d353', line: '#58a6ff', base: '#21262d',
 };
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const fmt = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
+const fmt = (n) => (n == null ? '—' : n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n));
 const esc = (s) => String(s).replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const cumsum = (a) => a.reduce((acc, v) => (acc.push((acc.at(-1) || 0) + v), acc), []);
 
+// ---------- fetch ----------
 async function gql(token, query, variables) {
   const res = await fetch('https://api.github.com/graphql', {
     method: 'POST',
@@ -27,68 +35,84 @@ async function gql(token, query, variables) {
   return json.data;
 }
 
-// The full-year contributionCalendar trips RESOURCE_LIMITS_EXCEEDED on this account, so pull it
-// in ~monthly windows (from/to) and stitch. Each window is cheap; a failed window is skipped
-// rather than failing the card. `now` is passed in so the render stays deterministic per run.
-async function fetchDays(login, token, now) {
-  const Q = `query($login:String!,$from:DateTime!,$to:DateTime!){user(login:$login){
-    contributionsCollection(from:$from,to:$to){ contributionCalendar{ weeks{ contributionDays{ date contributionCount } } } }}}`;
-  // adaptive: fetch a window; if it trips RESOURCE_LIMITS_EXCEEDED, split it in half and retry
-  // each half (down to ~a few days) so heavy windows still yield data. Sequential to avoid the
-  // concurrency that was getting whole windows throttled.
-  const fetchWindow = async (from, to, depth = 0) => {
-    try {
-      const d = await gql(token, Q, { login, from: from.toISOString(), to: to.toISOString() });
-      return d.user.contributionsCollection.contributionCalendar.weeks.flatMap((w) => w.contributionDays);
-    } catch (e) {
-      if (depth < 4 && (to - from) > 3 * 864e5) {
-        const mid = new Date((+from + +to) / 2);
-        return [...await fetchWindow(from, mid, depth + 1), ...await fetchWindow(mid, to, depth + 1)];
-      }
-      console.warn(`skip ${from.toISOString().slice(0, 10)}..${to.toISOString().slice(0, 10)}: ${e.message.slice(0, 60)}`);
-      return [];
+const CAL_Q = `query($login:String!,$from:DateTime!,$to:DateTime!){user(login:$login){
+  contributionsCollection(from:$from,to:$to){ contributionCalendar{ weeks{ contributionDays{ date contributionCount } } } }}}`;
+
+// fetch one range; on RESOURCE_LIMITS_EXCEEDED split in half until ~3 days, skip if still failing
+async function fetchWindow(login, token, from, to, depth = 0) {
+  try {
+    const d = await gql(token, CAL_Q, { login, from: from.toISOString(), to: to.toISOString() });
+    return d.user.contributionsCollection.contributionCalendar.weeks.flatMap((w) => w.contributionDays);
+  } catch (e) {
+    if (depth < 5 && (to - from) > 3 * 864e5) {
+      const mid = new Date((+from + +to) / 2);
+      return [...await fetchWindow(login, token, from, mid, depth + 1),
+              ...await fetchWindow(login, token, mid, to, depth + 1)];
     }
-  };
-  const map = new Map(); // dedupe overlapping month boundaries by date
-  for (let i = 0; i < 13; i++) {
-    const to = new Date(now); to.setUTCMonth(to.getUTCMonth() - i);
-    const from = new Date(to); from.setUTCMonth(from.getUTCMonth() - 1);
-    for (const d of await fetchWindow(from, to)) map.set(d.date, d.contributionCount);
+    console.warn(`skip ${from.toISOString().slice(0, 10)}..${to.toISOString().slice(0, 10)}: ${e.message.slice(0, 60)}`);
+    return [];
   }
-  return [...map.entries()].map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date));
 }
 
-// days: [{date:'YYYY-MM-DD', count}] sorted asc -> three {label,values} series
-function buildSeries(days) {
-  // daily: last 30 days
+// fetch [fromDate, toDate] as month windows (contributionsCollection caps ranges at 1 year)
+async function fetchRange(login, token, fromDate, toDate) {
+  const out = new Map();
+  let cur = new Date(Date.UTC(fromDate.getUTCFullYear(), fromDate.getUTCMonth(), 1));
+  while (cur <= toDate) {
+    const next = new Date(cur); next.setUTCMonth(next.getUTCMonth() + 1);
+    const from = cur < fromDate ? fromDate : cur;
+    const to = next > toDate ? toDate : next;
+    for (const d of await fetchWindow(login, token, from, to)) out.set(d.date, d.contributionCount);
+    cur = next;
+  }
+  return out;
+}
+
+const createdAt = async (login, token) =>
+  new Date((await gql(token, `query($login:String!){user(login:$login){createdAt}}`, { login })).user.createdAt);
+
+// ---------- series ----------
+const mmdd = (iso) => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
+const endLabels = (arr) => arr.map((v, i) => (i === 0 || i === arr.length - 1 ? v : ''));
+
+// days: sorted [{date,count}]
+function lastYearSeries(days) {
   const d = days.slice(-30);
   const daily = { values: d.map((x) => x.count), labels: endLabels(d.map((x) => mmdd(x.date))) };
-
-  // weekly: last 13 calendar weeks (7-day chunks aligned to the calendar)
   const weeks = [];
   for (let i = 0; i < days.length; i += 7) {
     const chunk = days.slice(i, i + 7);
-    weeks.push({ sum: chunk.reduce((s, x) => s + x.count, 0), start: chunk[0].date });
+    if (chunk.length) weeks.push({ sum: chunk.reduce((s, x) => s + x.count, 0), start: chunk[0].date });
   }
   const w = weeks.slice(-13);
   const weekly = { values: w.map((x) => x.sum), labels: endLabels(w.map((x) => mmdd(x.start))) };
-
-  // monthly: last 12 months
-  const byMonth = new Map();
-  for (const x of days) {
-    const k = x.date.slice(0, 7); // YYYY-MM
-    byMonth.set(k, (byMonth.get(k) || 0) + x.count);
-  }
-  const m = [...byMonth.entries()].sort((a, b) => a[0].localeCompare(b[0])).slice(-12);
+  const byMonth = monthTotals(days);
+  const m = byMonth.slice(-12);
   const monthly = { values: m.map((x) => x[1]), labels: m.map((x) => MONTHS[+x[0].slice(5, 7) - 1]) };
-
   return { daily, weekly, monthly };
 }
 
-const mmdd = (iso) => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}`;
-const endLabels = (arr) => arr.map((v, i) => (i === 0 || i === arr.length - 1 ? v : ''));
-const cumsum = (a) => a.reduce((acc, v) => (acc.push((acc.at(-1) || 0) + v), acc), []);
+function monthTotals(days) {
+  const map = new Map();
+  for (const x of days) { const k = x.date.slice(0, 7); map.set(k, (map.get(k) || 0) + x.count); }
+  return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+function yearTotals(days) {
+  const map = new Map();
+  for (const x of days) { const k = x.date.slice(0, 4); map.set(k, (map.get(k) || 0) + x.count); }
+  return [...map.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
 
+function allTimeSeries(days) {
+  const m = monthTotals(days);
+  // label only January of each year to mark year boundaries
+  const monthly = { values: m.map((x) => x[1]), labels: m.map((x) => (x[0].endsWith('-01') ? x[0].slice(0, 4) : '')) };
+  const y = yearTotals(days);
+  const yearly = { values: y.map((x) => x[1]), labels: y.map((x) => x[0]) };
+  return { monthly, yearly };
+}
+
+// ---------- render ----------
 function panel(x, y, w, h, title, series) {
   const { values, labels } = series;
   const n = values.length || 1;
@@ -96,17 +120,17 @@ function panel(x, y, w, h, title, series) {
   const cum = cumsum(values);
   const maxV = Math.max(...values, 1);
   const maxC = Math.max(cum.at(-1) || 1, 1);
-  const chartTop = y + 26, baseline = y + h - 18, chartH = baseline - chartTop;
+  const chartTop = y + 36, baseline = y + h - 20, chartH = baseline - chartTop; // more top room -> no legend overlap
   const slot = w / n;
   const barW = Math.min(slot * 0.62, 26);
 
   const bars = values.map((v, i) => {
-    const bh = (v / maxV) * chartH;
+    const bh = (v / maxV) * chartH * 0.92;
     const bx = x + i * slot + (slot - barW) / 2;
-    return `<rect x="${bx.toFixed(1)}" y="${(baseline - bh).toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="2" fill="${C.bar}"/>`;
+    return `<rect x="${bx.toFixed(1)}" y="${(baseline - bh).toFixed(1)}" width="${barW.toFixed(1)}" height="${bh.toFixed(1)}" rx="1.5" fill="${C.bar}"/>`;
   }).join('');
 
-  const pts = cum.map((v, i) => `${(x + i * slot + slot / 2).toFixed(1)},${(baseline - (v / maxC) * chartH).toFixed(1)}`);
+  const pts = cum.map((v, i) => `${(x + i * slot + slot / 2).toFixed(1)},${(baseline - (v / maxC) * chartH * 0.85).toFixed(1)}`);
   const line = `<polyline points="${pts.join(' ')}" fill="none" stroke="${C.line}" stroke-width="2" stroke-linejoin="round"/>`;
   const [ex, ey] = pts.at(-1).split(',');
   const endDot = `<circle cx="${ex}" cy="${ey}" r="3" fill="${C.line}"/>
@@ -116,53 +140,73 @@ function panel(x, y, w, h, title, series) {
     l ? `<text x="${(x + i * slot + slot / 2).toFixed(1)}" y="${baseline + 13}" fill="${C.label}" font-size="9" text-anchor="middle">${esc(l)}</text>` : '').join('');
 
   return `<g>
-    <text x="${x}" y="${y + 14}" fill="${C.value}" font-size="13" font-weight="600">${esc(title)}</text>
-    <text x="${x + w}" y="${y + 14}" fill="${C.label}" font-size="11" text-anchor="end">期間別 ▮  累計 ―  (計 ${fmt(total)})</text>
+    <text x="${x}" y="${y + 15}" fill="${C.value}" font-size="13" font-weight="600">${esc(title)}</text>
+    <text x="${x + w}" y="${y + 15}" fill="${C.label}" font-size="11" text-anchor="end">期間別 ▮   累計 ―</text>
     <line x1="${x}" y1="${baseline}" x2="${x + w}" y2="${baseline}" stroke="${C.base}"/>
     ${bars}${line}${endDot}${xlabels}
   </g>`;
 }
 
-function renderSVG(name, yearTotal, series) {
-  const W = 840, PAD = 40, pw = W - PAD * 2, ph = 150, top = 66;
-  const H = top + ph * 3 + 16;
+function card(name, subtitle, panels) {
+  const W = 840, PAD = 40, pw = W - PAD * 2, ph = 156, top = 70;
+  const H = top + ph * panels.length + 14;
+  const body = panels.map((p, i) => panel(PAD, top + ph * i, pw, ph, p.title, p.series)).join('\n  ');
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Ubuntu, sans-serif">
   <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="10" fill="${C.bg}" stroke="${C.border}"/>
-  <text x="${PAD}" y="38" fill="${C.title}" font-size="18" font-weight="700">${esc(name)} · GitHub Activity</text>
-  <text x="${W - PAD}" y="38" fill="${C.label}" font-size="12" text-anchor="end">past year: ${fmt(yearTotal)} contributions</text>
-  ${panel(PAD, top, pw, ph, 'Daily · last 30 days', series.daily)}
-  ${panel(PAD, top + ph, pw, ph, 'Weekly · last 13 weeks', series.weekly)}
-  ${panel(PAD, top + ph * 2, pw, ph, 'Monthly · last 12 months', series.monthly)}
+  <text x="${PAD}" y="40" fill="${C.title}" font-size="18" font-weight="700">${esc(name)} · GitHub Activity</text>
+  <text x="${W - PAD}" y="40" fill="${C.label}" font-size="12" text-anchor="end">${esc(subtitle)}</text>
+  ${body}
 </svg>`;
 }
 
-// ---- self-test: offline render with synthetic data ----
+const renderYear = (name, total, s) => card(name, `past year: ${fmt(total)} contributions`, [
+  { title: 'Daily · last 30 days', series: s.daily },
+  { title: 'Weekly · last 13 weeks', series: s.weekly },
+  { title: 'Monthly · last 12 months', series: s.monthly },
+]);
+
+const renderAll = (name, total, since, s) => card(name, `all time: ${fmt(total)} contributions since ${since}`, [
+  { title: 'Monthly · all time', series: s.monthly },
+  { title: 'Yearly', series: s.yearly },
+]);
+
+// ---------- self-test ----------
 if (process.argv.includes('--selftest')) {
   const days = [];
-  let dt = new Date('2025-07-01'); // fixed date; selftest only, never runs in prod
-  for (let i = 0; i < 370; i++) {
-    days.push({ date: dt.toISOString().slice(0, 10), count: (i * 7) % 11 });
-    dt = new Date(dt.getTime() + 864e5);
-  }
-  const s = buildSeries(days);
-  const svg = renderSVG('Test', 1234, s);
-  const ok = s.daily.values.length === 30 && s.weekly.values.length === 13 &&
-    s.monthly.values.length === 12 && svg.includes('GitHub Activity') && svg.includes('<polyline');
-  console.log(ok ? 'selftest OK' : 'selftest FAILED', {
-    daily: s.daily.values.length, weekly: s.weekly.values.length, monthly: s.monthly.values.length,
-  });
+  let dt = new Date('2019-01-01');
+  for (let i = 0; i < 2400; i++) { days.push({ date: dt.toISOString().slice(0, 10), count: (i * 7) % 11 }); dt = new Date(+dt + 864e5); }
+  const total = days.reduce((s, x) => s + x.count, 0);
+  const yr = lastYearSeries(days), all = allTimeSeries(days);
+  const a = renderYear('Test', total, yr), b = renderAll('Test', total, '2019', all);
+  const ok = yr.daily.values.length === 30 && yr.weekly.values.length === 13 && yr.monthly.values.length === 12 &&
+    all.yearly.values.length >= 6 && a.includes('<polyline') && b.includes('all time') && !a.includes('undefined');
+  console.log(ok ? 'selftest OK' : 'selftest FAILED', { years: all.yearly.values.length, months: all.monthly.values.length });
   process.exit(ok ? 0 : 1);
 }
 
-const [login, outfile = 'activity.svg'] = process.argv.slice(2);
+// ---------- main ----------
+const [login, cacheFile = '.github/data/contributions.json'] = process.argv.slice(2);
 const token = process.env.GITHUB_TOKEN;
-if (!login || !token) {
-  console.error('usage: GITHUB_TOKEN=<pat> node generate-activity.mjs <login> [outfile]');
-  process.exit(1);
-}
-const days = await fetchDays(login, token, new Date());
-const yearTotal = days.reduce((s, x) => s + x.count, 0);
-const svg = renderSVG(login, yearTotal, buildSeries(days));
-const { writeFileSync } = await import('node:fs');
-writeFileSync(outfile, svg);
-console.log(`wrote ${outfile}: ${days.length} days, ${yearTotal} contributions`);
+if (!login || !token) { console.error('usage: GITHUB_TOKEN=<pat> node generate-activity.mjs <login> [cacheFile]'); process.exit(1); }
+
+const cache = existsSync(cacheFile) ? JSON.parse(readFileSync(cacheFile, 'utf8')) : { login, days: {} };
+const cachedDates = Object.keys(cache.days).sort();
+const now = new Date();
+// backfill from account creation on first run; else refetch only the last ~10 days (corrections)
+const from = cachedDates.length
+  ? new Date(Math.max(+new Date(cachedDates.at(-1)) - 10 * 864e5, +new Date(cachedDates[0])))
+  : await createdAt(login, token);
+console.log(`fetching ${from.toISOString().slice(0, 10)}..${now.toISOString().slice(0, 10)} (cache: ${cachedDates.length} days)`);
+const fresh = await fetchRange(login, token, from, now);
+for (const [date, count] of fresh) cache.days[date] = count;
+cache.login = login; cache.updatedAt = now.toISOString();
+
+const days = Object.entries(cache.days).map(([date, count]) => ({ date, count })).sort((a, b) => a.date.localeCompare(b.date));
+const total = days.reduce((s, x) => s + x.count, 0);
+const since = days[0]?.date.slice(0, 4) || '';
+const lastYearTotal = days.slice(-365).reduce((s, x) => s + x.count, 0);
+
+writeFileSync(cacheFile, JSON.stringify(cache));
+writeFileSync('activity.svg', renderYear(login, lastYearTotal, lastYearSeries(days)));
+writeFileSync('activity-all.svg', renderAll(login, total, since, allTimeSeries(days)));
+console.log(`wrote activity.svg + activity-all.svg + cache: ${days.length} days, ${total} total since ${since}`);
