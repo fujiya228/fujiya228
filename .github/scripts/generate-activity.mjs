@@ -182,13 +182,12 @@ const renderAll = (name, total, since, s) => card(name, `all time: ${fmt(total)}
   { title: 'Yearly', series: s.yearly },
 ]);
 
-// All-time daily heatmap, GitHub-style but vertical: one week per row, newest week on top.
+// All-time daily heatmap, GitHub-style but one MONTH per row (cols = day 1..31), newest on top.
 function renderCalendar(name, daysMap) {
-  const CELL = 11, GAP = 3, STEP = CELL + GAP, ML = 46, MT = 46, MB = 36;
+  const CELL = 11, GAP = 2, STEP = CELL + GAP, ML = 62, MT = 44, MB = 34;
   const PAL = ['#161b22', '#0e4429', '#006d32', '#26a641', '#39d353']; // GitHub dark scale
-  const DAY = 864e5, iso = (d) => d.toISOString().slice(0, 10);
+  const pad = (n) => String(n).padStart(2, '0');
   const dates = Object.keys(daysMap).sort();
-  const total = Object.values(daysMap).reduce((s, v) => s + v, 0);
 
   // quartile thresholds over nonzero days -> 4 intensity levels
   const nz = Object.values(daysMap).filter((v) => v > 0).sort((a, b) => a - b);
@@ -196,35 +195,36 @@ function renderCalendar(name, daysMap) {
   const [q1, q2, q3] = [q(0.25), q(0.5), q(0.75)];
   const level = (c) => (c <= 0 ? 0 : c <= q1 ? 1 : c <= q2 ? 2 : c <= q3 ? 3 : 4);
 
-  const sunday = (d) => new Date(+d - d.getUTCDay() * DAY);
-  const today = new Date(dates.at(-1) + 'T00:00:00Z');
-  const lastSun = sunday(today);
-  const firstSun = sunday(new Date(dates[0] + 'T00:00:00Z'));
-  const nWeeks = Math.round((+lastSun - +firstSun) / (7 * DAY)) + 1;
+  // months oldest -> newest, then reversed so newest is row 0 (top)
+  const [fy, fm] = [+dates[0].slice(0, 4), +dates[0].slice(5, 7)];
+  const [ly, lm] = [+dates.at(-1).slice(0, 4), +dates.at(-1).slice(5, 7)];
+  const months = [];
+  for (let y = fy, m = fm; y < ly || (y === ly && m <= lm); m++ > 11 && (m = 1, y++)) months.push([y, m]);
+  months.reverse();
+  const today = dates.at(-1);
+  const dim = (y, m) => new Date(Date.UTC(y, m, 0)).getUTCDate();
 
-  const W = ML + 7 * STEP + 10, H = MT + nWeeks * STEP + MB;
-  const DOW = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-  let cells = '', ylabels = '', prevYear = null;
-  for (let i = 0; i < nWeeks; i++) { // i=0 => newest week, at top
-    const wStart = new Date(+lastSun - i * 7 * DAY);
-    const yr = wStart.getUTCFullYear();
-    if (yr !== prevYear) { ylabels += `<text x="8" y="${MT + i * STEP + CELL}" fill="${C.label}" font-size="10">${yr}</text>`; prevYear = yr; }
-    for (let c = 0; c < 7; c++) {
-      const d = new Date(+wStart + c * DAY);
-      if (d > today) continue; // future days in the current week
-      const cnt = daysMap[iso(d)] || 0;
-      cells += `<rect x="${ML + c * STEP}" y="${MT + i * STEP}" width="${CELL}" height="${CELL}" rx="2" fill="${PAL[level(cnt)]}"/>`;
+  const W = ML + 31 * STEP + 10, H = MT + months.length * STEP + MB;
+  let cells = '', labels = '', prevYear = null;
+  months.forEach(([y, m], i) => {
+    const ry = MT + i * STEP;
+    if (y !== prevYear) { labels += `<text x="8" y="${ry + CELL}" fill="${C.label}" font-size="10">${y}</text>`; prevYear = y; }
+    labels += `<text x="${ML - 6}" y="${ry + CELL}" fill="${C.label}" font-size="10" text-anchor="end">${MONTHS[m - 1]}</text>`;
+    for (let d = 1; d <= dim(y, m); d++) {
+      const key = `${y}-${pad(m)}-${pad(d)}`;
+      if (key > today) continue;
+      cells += `<rect x="${ML + (d - 1) * STEP}" y="${ry}" width="${CELL}" height="${CELL}" rx="2" fill="${PAL[level(daysMap[key] || 0)]}"/>`;
     }
-  }
-  const dowHead = DOW.map((l, c) => `<text x="${ML + c * STEP + CELL / 2}" y="${MT - 8}" fill="${C.label}" font-size="9" text-anchor="middle">${l}</text>`).join('');
-  const legend = PAL.map((col, i) => `<rect x="${ML + i * 16}" y="${H - 20}" width="11" height="11" rx="2" fill="${col}"/>`).join('') +
-    `<text x="${ML - 4}" y="${H - 11}" fill="${C.label}" font-size="9" text-anchor="end">Less</text>` +
-    `<text x="${ML + 5 * 16 + 4}" y="${H - 11}" fill="${C.label}" font-size="9">More</text>`;
+  });
+  const dayHead = [1, 5, 10, 15, 20, 25, 31].map((d) => `<text x="${ML + (d - 1) * STEP + CELL / 2}" y="${MT - 8}" fill="${C.label}" font-size="9" text-anchor="middle">${d}</text>`).join('');
+  const legend = PAL.map((col, i) => `<rect x="${ML + i * 16}" y="${H - 19}" width="11" height="11" rx="2" fill="${col}"/>`).join('') +
+    `<text x="${ML - 6}" y="${H - 10}" fill="${C.label}" font-size="9" text-anchor="end">Less</text>` +
+    `<text x="${ML + 5 * 16 + 4}" y="${H - 10}" fill="${C.label}" font-size="9">More</text>`;
 
   return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" fill="none" xmlns="http://www.w3.org/2000/svg" font-family="Segoe UI, Ubuntu, sans-serif">
   <rect x="0.5" y="0.5" width="${W - 1}" height="${H - 1}" rx="10" fill="${C.bg}" stroke="${C.border}"/>
-  <text x="16" y="26" fill="${C.title}" font-size="14" font-weight="700">${esc(name)} · daily</text>
-  ${dowHead}${ylabels}${cells}${legend}
+  <text x="16" y="26" fill="${C.title}" font-size="14" font-weight="700">${esc(name)} · daily (month per row)</text>
+  ${dayHead}${labels}${cells}${legend}
 </svg>`;
 }
 
