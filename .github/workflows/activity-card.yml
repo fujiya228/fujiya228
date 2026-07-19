@@ -1,0 +1,31 @@
+name: Activity Card
+
+on:
+  schedule: # daily at 02:00 UTC (11:00 JST)
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  activity:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generate activity.svg
+        env:
+          # PAT: the default repo-scoped GITHUB_TOKEN 403s on cross-repo user queries
+          GITHUB_TOKEN: ${{ secrets.METRICS_TOKEN }}
+        run: node .github/scripts/generate-activity.mjs "${{ github.repository_owner }}" activity.svg
+      - name: Commit if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if ! git diff --quiet activity.svg; then
+            git add activity.svg
+            git commit -m "chore: refresh activity.svg [skip ci]"
+            git pull --rebase --autostash
+            git push
+          else
+            echo "activity.svg unchanged"
+          fi
